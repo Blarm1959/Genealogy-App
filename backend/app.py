@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from . import gedcom
 from .models import Base, Workspace, Import, Person, Membership, Relationship, Entry, Document, Audit, LoginSession, uid, now
 from .security import password_valid
+from .search import SearchBody, SearchService
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,6 +63,8 @@ def create_app(config=None):
         def sqlite_fk(dbapi, _): dbapi.execute('PRAGMA foreign_keys=ON')
     sessions = sessionmaker(engine, expire_on_commit=False)
     attempts = defaultdict(deque)
+    search_service = SearchService()
+    app_search_requests = defaultdict(deque)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -120,6 +123,15 @@ def create_app(config=None):
                 'birth': next((e['date'] for e in events if e['type'] == 'BIRT'), ''),
                 'death': next((e['date'] for e in events if e['type'] == 'DEAT'), ''),
                 'place': next((e['place'] for e in events if e['type'] == 'BIRT'), '')}
+
+    @app.post('/api/search', dependencies=[Depends(logged_in)])
+    async def external_search(body: SearchBody, request: Request):
+        key = request.cookies.get('genealogy_session', '')
+        queue = app_search_requests[key]
+        while queue and queue[0] < time.monotonic() - 60: queue.popleft()
+        if len(queue) >= 10: raise HTTPException(429, 'Please wait a minute before searching again.')
+        queue.append(time.monotonic())
+        return await search_service.search(body)
 
     @app.get('/api/health')
     def health(): return {'status': 'ok'}
