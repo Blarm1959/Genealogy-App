@@ -7,9 +7,6 @@ port=${1:-8510}
 [[ $port =~ ^[0-9]+$ && $port -ge 1024 && $port -le 65535 && $port -ne 18510 ]] || { echo 'Choose a port between 1024 and 65535.' >&2; exit 1; }
 [[ $root =~ ^/[A-Za-z0-9_./-]+$ ]] || { echo 'Installation path must not contain spaces or shell metacharacters.' >&2; exit 1; }
 [[ ! -e /etc/genealogy/config.json && ! -e /etc/systemd/system/genealogy.service && ! -e /etc/nginx/sites-enabled/genealogy ]] || { echo 'Genealogy is already configured. Use update_lxc.sh.' >&2; exit 1; }
-command -v node >/dev/null || { echo 'Install Node.js 22.12+ in this LXC first; see docs/SETUP.md in Genealogy.' >&2; exit 1; }
-command -v npm >/dev/null || { echo 'npm is required alongside Node.js.' >&2; exit 1; }
-node -e 'const [m,n]=process.versions.node.split(".").map(Number);if(m<22||(m===22&&n<12))process.exit(1)' || { echo 'Node.js 22.12 or later is required.' >&2; exit 1; }
 apt-get update
 apt-get install -y python3 python3-venv postgresql postgresql-client nginx git curl
 systemctl enable --now postgresql
@@ -26,8 +23,6 @@ source "$root/admin/runtime_git.sh"
 python3 -m venv "$root/.venv"
 "$root/.venv/bin/pip" install -r "$root/requirements.txt"
 cd "$root"
-npm install --no-audit --no-fund
-npm run build
 dbpass=$("$root/.venv/bin/python" -c 'import secrets; print(secrets.token_hex(32))')
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<SQL
 CREATE ROLE genealogy LOGIN PASSWORD '$dbpass';

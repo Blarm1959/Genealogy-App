@@ -12,17 +12,24 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, select, event, or_, func
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
 
 from . import gedcom
-from .models import Base, Workspace, Import, Person, Membership, Relationship, Entry, Document, Audit, LoginSession, uid, now
+from .models import Base, Workspace, Import, Person, Membership, Relationship, Entry, Document, Audit, LoginSession, SearchRun, uid, now
 from .security import password_valid
 from .search import SearchBody, SearchService
 
 ROOT = Path(__file__).resolve().parents[1]
+
+class LeadBody(BaseModel):
+    name: str = Field(min_length=1,max_length=200)
+    source: str = Field(min_length=1,max_length=100)
+    url: str = Field(min_length=1,max_length=2000)
+    notes: str = Field(default='',max_length=10000)
 
 class LoginBody(BaseModel):
     password: str = Field(min_length=1, max_length=256)
@@ -76,6 +83,12 @@ def create_app(config=None):
         engine.dispose()
 
     app = FastAPI(title='Genealogy', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    browser_origins = config.get('browser_origins', [])
+    if browser_origins:
+        if any(not o.startswith('https://') or '*' in o or urlsplit(o).path for o in browser_origins):
+            raise RuntimeError('Browser origins must be exact HTTPS origins without paths or wildcards.')
+        if not config.get('secure_cookie'): raise RuntimeError('Separate HTTPS frontend requires secure_cookie.')
+        app.add_middleware(CORSMiddleware, allow_origins=browser_origins, allow_credentials=True, allow_methods=['GET','POST'], allow_headers=['Content-Type','X-Genealogy-Request'])
     app.state.engine = engine
     app.state.data_dir = data_dir
 
@@ -99,7 +112,7 @@ def create_app(config=None):
             if request.headers.get('x-genealogy-request') != '1':
                 return JSONResponse({'detail': 'Missing request protection header.'}, status_code=403)
             origin = request.headers.get('origin')
-            if origin and urlsplit(origin).netloc != request.headers.get('host'):
+            if origin and urlsplit(origin).netloc != request.headers.get('host') and origin not in browser_origins:
                 return JSONResponse({'detail': 'Cross-origin request refused.'}, status_code=403)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -125,13 +138,37 @@ def create_app(config=None):
                 'place': next((e['place'] for e in events if e['type'] == 'BIRT'), '')}
 
     @app.post('/api/search', dependencies=[Depends(logged_in)])
-    async def external_search(body: SearchBody, request: Request):
+    async def external_search(body: SearchBody, request: Request, s=Depends(db)):
         key = request.cookies.get('genealogy_session', '')
         queue = app_search_requests[key]
         while queue and queue[0] < time.monotonic() - 60: queue.popleft()
         if len(queue) >= 10: raise HTTPException(429, 'Please wait a minute before searching again.')
         queue.append(time.monotonic())
-        return await search_service.search(body)
+        result = await search_service.search(body)
+        run = SearchRun(query=body.model_dump(), results=result)
+        s.add(run); s.commit()
+        return {**result, 'search_id': run.id}
+
+    @app.get('/api/searches', dependencies=[Depends(logged_in)])
+    def saved_searches(s=Depends(db)):
+        return [{'id':r.id,'query':r.query,'created':r.created,'count':len(r.results.get('results',[])),'status':r.results.get('status','unknown')} for r in s.scalars(select(SearchRun).order_by(SearchRun.created.desc()).limit(100))]
+
+    @app.get('/api/searches/{id}', dependencies=[Depends(logged_in)])
+    def saved_search(id: str, s=Depends(db)):
+        run=s.get(SearchRun,id)
+        if not run: raise HTTPException(404,'Search not found.')
+        return {**run.results,'search_id':run.id,'query':run.query,'created':run.created}
+
+    @app.post('/api/searches/{id}/leads', dependencies=[Depends(logged_in)])
+    def record_lead(id: str, body: LeadBody, s=Depends(db)):
+        run=s.scalar(select(SearchRun).where(SearchRun.id==id).with_for_update())
+        if not run: raise HTTPException(404,'Search not found.')
+        safe_url(body.url)
+        from .collate import add_lead
+        try: run.results=add_lead(run.results,body.model_dump())
+        except ValueError as e: raise HTTPException(400,str(e))
+        s.commit()
+        return {**run.results,'search_id':run.id}
 
     @app.get('/api/health')
     def health(): return {'status': 'ok'}
@@ -151,7 +188,7 @@ def create_app(config=None):
         s.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), expires=expiry))
         s.commit()
         response = JSONResponse({'ok': True})
-        response.set_cookie('genealogy_session', token, httponly=True, secure=config.get('secure_cookie', False), samesite='strict', max_age=43200)
+        response.set_cookie('genealogy_session', token, httponly=True, secure=config.get('secure_cookie', False), samesite='none' if browser_origins else 'strict', max_age=43200)
         return response
 
     @app.post('/api/logout', dependencies=[Depends(logged_in)])
@@ -369,6 +406,20 @@ def create_app(config=None):
     @app.exception_handler(IntegrityError)
     async def duplicate_handler(request, exc):
         return JSONResponse({'detail': 'A conflicting update occurred. Refresh and review before trying again.'}, status_code=409)
+
+    @app.get('/')
+    def search_frontend(): return FileResponse(ROOT / 'index.html')
+
+    @app.get('/search-app.js')
+    def search_script(): return FileResponse(ROOT / 'search-app.js', media_type='text/javascript')
+
+    @app.get('/search-app.css')
+    def search_style(): return FileResponse(ROOT / 'search-app.css', media_type='text/css')
+
+    @app.get('/release.json')
+    def release_metadata():
+        metadata=ROOT / 'release.json'
+        return json.loads(metadata.read_text(encoding='utf-8-sig')) if metadata.exists() else {'version':'development'}
 
     if (ROOT / 'dist').is_dir(): app.mount('/', StaticFiles(directory=ROOT / 'dist', html=True), name='frontend')
     return app

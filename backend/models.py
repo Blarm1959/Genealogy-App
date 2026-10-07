@@ -74,3 +74,10 @@ class LoginSession(Base):
     __tablename__ = 'sessions'
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     expires: Mapped[str] = mapped_column(String(50))
+
+class SearchRun(Base):
+    __tablename__ = 'search_runs'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    query: Mapped[dict] = mapped_column(JSON)
+    results: Mapped[dict] = mapped_column(JSON)
+    created: Mapped[str] = mapped_column(String(50), default=now)
