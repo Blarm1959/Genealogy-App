@@ -1,11 +1,11 @@
 {
   "name": "genealogy",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit \u0026\u0026 vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
