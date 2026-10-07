@@ -16,5 +16,5 @@ def main():
     data['browser_origins']=[args.origin];data['secure_cookie']=True
     # Preserve the private config file ownership/mode; never print its contents.
     with path.open('w') as f:json.dump(data,f,indent=2);f.flush();os.fsync(f.fileno())
-    print('Configured HTTPS browser origin. Restart genealogy.service. Use HTTPS for owner login.')
+    print('Configured HTTPS browser origin. Restart genealogy.service. Use the HTTPS backend address in the GitHub frontend.')
 if __name__=='__main__':main()

@@ -59,7 +59,7 @@ def create_app(config=None):
         config_path = os.environ.get('GENEALOGY_CONFIG')
         if not config_path: raise RuntimeError('Set GENEALOGY_CONFIG to your private JSON configuration. See docs/SETUP.md.')
         config = json.loads(Path(config_path).read_text())
-    if not config.get('password_hash'): raise RuntimeError('Owner password hash is required.')
+    if config.get('require_login', False) and not config.get('password_hash'): raise RuntimeError('Owner password hash is required when require_login is enabled.')
     data_dir = Path(config['data_dir']).resolve()
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     for folder in ('imports', 'documents'): (data_dir / folder).mkdir(exist_ok=True, mode=0o700)
@@ -87,7 +87,7 @@ def create_app(config=None):
     if browser_origins:
         if any(not o.startswith('https://') or '*' in o or urlsplit(o).path for o in browser_origins):
             raise RuntimeError('Browser origins must be exact HTTPS origins without paths or wildcards.')
-        if not config.get('secure_cookie'): raise RuntimeError('Separate HTTPS frontend requires secure_cookie.')
+        if config.get('require_login', False) and not config.get('secure_cookie'): raise RuntimeError('Separate authenticated HTTPS frontend requires secure_cookie.')
         app.add_middleware(CORSMiddleware, allow_origins=browser_origins, allow_credentials=True, allow_methods=['GET','POST'], allow_headers=['Content-Type','X-Genealogy-Request'])
     app.state.engine = engine
     app.state.data_dir = data_dir
@@ -96,6 +96,7 @@ def create_app(config=None):
         with sessions() as s: yield s
 
     def logged_in(request: Request, s=Depends(db)):
+        if not config.get('require_login', False): return None
         token = request.cookies.get('genealogy_session', '')
         row = s.get(LoginSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
         if not row or row.expires <= now(): raise HTTPException(401, 'Please sign in.')
@@ -139,7 +140,7 @@ def create_app(config=None):
 
     @app.post('/api/search', dependencies=[Depends(logged_in)])
     async def external_search(body: SearchBody, request: Request, s=Depends(db)):
-        key = request.cookies.get('genealogy_session', '')
+        key = request.client.host if request.client else 'unknown'
         queue = app_search_requests[key]
         while queue and queue[0] < time.monotonic() - 60: queue.popleft()
         if len(queue) >= 10: raise HTTPException(429, 'Please wait a minute before searching again.')

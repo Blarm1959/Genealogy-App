@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "project": "Genealogy",
-  "version": "1.0.4",
-  "githubSource": "v1.0.4",
+  "version": "1.0.5",
+  "githubSource": "v1.0.5",
   "zipPrefix": "Genealogy-",
   "port": 0,
   "packageChanges": false,
